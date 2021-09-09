@@ -2,7 +2,7 @@
 # this repository contains the full copyright notices and license terms.
 from collections import defaultdict
 import datetime
-
+from datetime import timedelta
 from sql import Null
 
 from trytond.model import Model, ModelView, ModelSQL, fields, Unique, \
@@ -12,7 +12,7 @@ from trytond.transaction import Transaction
 from trytond.wizard import Wizard, StateView, StateAction, StateTransition, \
     Button
 from trytond.pool import Pool
-
+from sql import Null, Literal
 
 class Procedure(ModelSQL, ModelView):
     'Account Dunning Procedure'
@@ -62,9 +62,12 @@ class Level(sequence_ordered(), ModelSQL, ModelView):
             self.procedure.rec_name)
 
     def test(self, line, date):
+       try:
         if self.overdue is not None:
             return (date - line.maturity_date) >= self.overdue
-
+       except Exception:
+            return None
+       
 
 _STATES = {
     'readonly': Eval('state') != 'draft',
@@ -97,6 +100,16 @@ class Dunning(ModelSQL, ModelView):
             ('procedure', '=', Eval('procedure', -1)),
             ],
         states=_STATES, depends=_DEPENDS + ['procedure'])
+    date = fields.Date("Date", readonly=True,
+        states={	
+	    'invisible': Eval('state') == 'draft',
+	 },
+	 depends=['state'], help="When the dunning has started at the level.")
+    age = fields.Function(fields.TimeDelta(  "Age", 
+         states={
+             'invisible': Eval('state') == 'draft',
+                },
+         depends=['state'], help="How long the dunning has been at the level."),'get_age')        
     blocked = fields.Boolean('Blocked',
         help="Check to block further levels of the procedure.")
     state = fields.Selection([
@@ -150,7 +163,7 @@ class Dunning(ModelSQL, ModelView):
         cursor.execute(*dunning.update(
                 [dunning.state], ['waiting'],
                 where=dunning.state == 'done'))
-
+              
     @staticmethod
     def default_company():
         return Transaction().context.get('company')
@@ -159,6 +172,20 @@ class Dunning(ModelSQL, ModelView):
     def default_state():
         return 'draft'
 
+                
+    def get_age(self, name):
+        pool = Pool()
+        Date = pool.get('ir.date')
+        if self.date:
+            return Date.today() - self.date
+            
+    @classmethod
+    def order_age(cls, tables):
+        pool = Pool()
+        Date = pool.get('ir.date')
+        table, _ = tables[None]
+        return [Literal(Date.today()) - table.date]   
+        
     def get_active(self, name):
         return not self.line.reconciliation
 
@@ -259,10 +286,12 @@ class Dunning(ModelSQL, ModelView):
                 to_write.extend((dunnings, {
                             'level': level.id,
                             'state': 'draft',
+                            'date': None,
                             }))
             else:
                 to_write.extend((dunnings, {
                             'state': 'final',
+                            'date': Date.today(),
                             }))
         if to_write:
             cls.write(*to_write)
@@ -291,9 +320,12 @@ class Dunning(ModelSQL, ModelView):
 
     @classmethod
     def process(cls, dunnings):
+        pool = Pool()
+        Date = pool.get('ir.date')
         cls.write([d for d in dunnings
                 if not d.blocked and d.state == 'draft'], {
                 'state': 'waiting',
+                'date': Date.today(),
                 })
 
 
